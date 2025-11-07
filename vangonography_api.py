@@ -114,3 +114,4 @@ def extract_file_from_image(image_path: str, output_dir: str, password: Optional
     with open(out,'wb') as f:
         f.write(data)
     return out
+    
