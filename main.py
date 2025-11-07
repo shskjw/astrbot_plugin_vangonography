@@ -50,9 +50,19 @@ def decrypt_data(d: bytes, p: str) -> bytes:
 
 def _embed_data(imp: str, d: bytes, oup: str):
     im = Image.open(imp).convert('RGB')
-    bits = ''.join(f'{b:08b}' for b in (d + DELIMITER))
     w, h = im.size
-    if len(bits) > w * h * 3: raise ValueError('数据对于图片来说太大了')
+    bits = ''.join(f'{b:08b}' for b in (d + DELIMITER))
+
+    # 自动计算是否需要放大
+    required_pixels = -(-len(bits) // 3)
+    current_pixels = w * h
+    if required_pixels > current_pixels:
+        scale = (required_pixels / current_pixels) ** 0.5
+        new_w = int(w * scale) + 1
+        new_h = int(h * scale) + 1
+        im = im.resize((new_w, new_h))
+        w, h = new_w, new_h
+
     idx = 0
     for y in range(h):
         for x in range(w):
@@ -66,25 +76,12 @@ def _embed_data(imp: str, d: bytes, oup: str):
     im.save(oup, 'PNG')
 
 
-def _extract_data(imp: str) -> bytes:
-    im = Image.open(imp).convert('RGB')
-    w, h = im.size
-    bits, db = '', ''.join(f'{b:08b}' for b in DELIMITER)
-    for y in range(h):
-        for x in range(w):
-            r, g, b = im.getpixel((x, y))
-            bits += str(r & 1) + str(g & 1) + str(b & 1)
-            if db in bits: break
-        if db in bits: break
-    data_bits = bits.split(db)[0]
-    return bytes(int(data_bits[i:i + 8], 2) for i in range(0, len(data_bits), 8) if len(data_bits[i:i + 8]) == 8)
-
-
 def hide_file_into_image(c_path: str, f_path: str, f_name: str, o_path: str, enc: bool = False, p: Optional[str] = None,
                          td: Optional[str] = None):
     cln, pay = False, b""
     if td is None: td, cln = tempfile.mkdtemp(), True
     try:
+        # 同步文件读取
         with open(f_path, 'rb') as f:
             file_content = f.read()
 
@@ -100,6 +97,35 @@ def hide_file_into_image(c_path: str, f_path: str, f_name: str, o_path: str, enc
                 shutil.rmtree(td)
             except:
                 pass
+
+
+def _extract_data(ip: str) -> bytes:
+    im = Image.open(ip)
+    w, h = im.size
+    data_bits = []
+
+    # LSB 隐写提取
+    for y in range(h):
+        for x in range(w):
+            r, g, b = im.getpixel((x, y))
+            data_bits.append(str(r & 1))
+            data_bits.append(str(g & 1))
+            data_bits.append(str(b & 1))
+
+    # 将位串转换为字节
+    byte_string = "".join(data_bits)
+    data_bytes = bytearray()
+    for i in range(0, len(byte_string) // 8 * 8, 8):
+        byte = int(byte_string[i:i + 8], 2)
+        data_bytes.append(byte)
+
+    # 查找分隔符
+    try:
+        delimiter_index = data_bytes.index(DELIMITER)
+        return bytes(data_bytes[:delimiter_index])
+    except ValueError:
+        logger.error("未找到文件分隔符，返回全部提取数据。")
+        return bytes(data_bytes)
 
 
 def extract_file_from_image(ip: str, od: str, p: Optional[str] = None) -> str:
@@ -121,6 +147,7 @@ def extract_file_from_image(ip: str, od: str, p: Optional[str] = None) -> str:
         file_content = d
 
     op = os.path.join(od, filename)
+    # 同步文件写入
     with open(op, 'wb') as f:
         f.write(file_content)
     return op
@@ -175,22 +202,22 @@ class FileWorkflow:
     'shskjw',
     'astrbot_plugin_vangonography',
     '一个通过图片隐写术来隐藏和提取文件的插件',
-    '1.0.0'
+    '1.0.1'
 )
 class VangonographyStar(Star):
     def __init__(self, context: Context):
         super().__init__(context)
+        # 在插件目录下创建临时文件夹
         self.tmp_dir = os.path.join(os.path.dirname(__file__), 'tmp_vangonography')
         os.makedirs(self.tmp_dir, exist_ok=True)
         self.iwf = FileWorkflow()
-        self.timeout = 120
+        self.timeout = 1200
 
     async def terminate(self):
         await self.iwf.terminate()
 
     @filter.command('隐藏')
     async def hide_process(self, event: AstrMessageEvent):
-        # 移除了 state 中的 original_filename，因为它现在由用户输入
         state = {"step": "awaiting_cover", "cover_path": None, "file_path": None,
                  "password": None, "temp_paths": [], "session_id": str(uuid.uuid4()), "retry_count": 0}
 
@@ -198,6 +225,9 @@ class VangonographyStar(Star):
 
         @session_waiter(timeout=self.timeout)
         async def interaction_waiter(controller: SessionController, next_event: AstrMessageEvent):
+            # 获取当前事件循环
+            loop = asyncio.get_running_loop()
+
             try:
                 async def handle_media_request(media_type: str):
                     media_bytes = None
@@ -221,8 +251,9 @@ class VangonographyStar(Star):
 
                     ext = "_cover.png" if media_type == 'image' else "_file_to_hide"
                     path = os.path.join(self.tmp_dir, f"{state['session_id']}{ext}")
-                    with open(path, 'wb') as f:
-                        f.write(media_bytes)
+
+                    await loop.run_in_executor(None, lambda: Path(path).write_bytes(media_bytes))
+
                     state["temp_paths"].append(path)
 
                     return "ok", path
@@ -240,7 +271,6 @@ class VangonographyStar(Star):
                     if result == "continue": return
                     if result == "stop": controller.stop(); return
                     state["file_path"] = path
-                    # 进入新的步骤，等待用户输入文件名
                     state.update({"step": "awaiting_filename", "retry_count": 0})
                     await next_event.send(
                         next_event.plain_result("文件收到。请为这个文件命名（需要包含后缀，例如：我的文档.zip）"))
@@ -261,16 +291,24 @@ class VangonographyStar(Star):
                     output_path = os.path.join(self.tmp_dir, f"{state['session_id']}_output.png")
                     state["temp_paths"].append(output_path)
 
-                    # 使用用户输入的文件名 state["filename"]
-                    hide_file_into_image(state["cover_path"], state["file_path"], state["filename"],
-                                         output_path, enc=bool(password), p=password, td=self.tmp_dir)
+                    await loop.run_in_executor(
+                        None,  # 使用默认的 ThreadPoolExecutor
+                        lambda: hide_file_into_image(
+                            state["cover_path"],
+                            state["file_path"],
+                            state["filename"],
+                            output_path,
+                            enc=bool(password),
+                            p=password,
+                            td=self.tmp_dir
+                        )
+                    )
 
-                    with open(output_path, 'rb') as f:
-                        image_bytes = f.read()
                     await next_event.send(MessageChain([
                         Plain('✅ 隐写完成，图片如下：'),
-                        CompImage.fromBytes(image_bytes)
+                        CompImage.fromPath(output_path)
                     ]))
+
                     controller.stop()
 
             except Exception as e:
@@ -283,6 +321,7 @@ class VangonographyStar(Star):
         except TimeoutError:
             await event.send(event.plain_result("操作超时，已取消。"))
         finally:
+            # 发送完成后，清理临时文件
             for path in state["temp_paths"]:
                 if os.path.exists(path):
                     try:
@@ -299,6 +338,9 @@ class VangonographyStar(Star):
         @session_waiter(timeout=self.timeout)
         async def extraction_waiter(controller: SessionController, next_event: AstrMessageEvent):
             session_id = str(uuid.uuid4())
+            # 获取当前事件循环
+            loop = asyncio.get_running_loop()
+
             try:
                 if state["step"] == "awaiting_stego_image":
                     img_bytes = await self.iwf.get_image(next_event)
@@ -312,8 +354,10 @@ class VangonographyStar(Star):
                             return
                     else:
                         img_path = os.path.join(self.tmp_dir, f"{session_id}_stego.png")
-                        with open(img_path, 'wb') as f:
-                            f.write(img_bytes)
+
+                        # 异步写入文件
+                        await loop.run_in_executor(None, lambda: Path(img_path).write_bytes(img_bytes))
+
                         state.update({"temp_paths": [img_path], "img_path": img_path,
                                       "step": "awaiting_password", "retry_count": 0})
                         await next_event.send(
@@ -324,22 +368,27 @@ class VangonographyStar(Star):
                     if password.lower() in ['不需要', '不用', 'no', '']: password = None
                     await next_event.send(next_event.plain_result('收到。正在提取...'))
 
-                    result_path = extract_file_from_image(ip=state["img_path"], od=self.tmp_dir, p=password)
+                    result_path = await loop.run_in_executor(
+                        None,
+                        lambda: extract_file_from_image(
+                            state["img_path"],  # ip
+                            self.tmp_dir,  # od
+                            password  # p
+                        )
+                    )
+
                     state["temp_paths"].append(result_path)
                     filename = os.path.basename(result_path)
 
                     if os.path.exists(result_path):
                         await next_event.send(next_event.plain_result("✅ 提取完成，文件将私聊发送给您。"))
 
-                        with open(result_path, "rb") as f:
-                            file_data = f.read()
-
+                        file_data = await loop.run_in_executor(None, Path(result_path).read_bytes)
 
                         encoded_string = base64.b64encode(file_data).decode('ascii')
                         bot = next_event.bot
 
                         try:
-                            # 尝试以私聊形式发送文件
                             await bot.send_private_msg(
                                 user_id=next_event.get_sender_id(),
                                 message=[
@@ -372,6 +421,7 @@ class VangonographyStar(Star):
         except TimeoutError:
             await event.send(event.plain_result("操作超时，已取消。"))
         finally:
+            # 清理临时文件
             for path in state["temp_paths"]:
                 if os.path.exists(path):
                     try:
