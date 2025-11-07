@@ -188,7 +188,7 @@ class VangonographyStar(Star):
     async def terminate(self):
         await self.iwf.terminate()
 
-    @filter.command('vang 隐藏', '隐写')
+    @filter.command('隐藏')
     async def hide_process(self, event: AstrMessageEvent):
         # 移除了 state 中的 original_filename，因为它现在由用户输入
         state = {"step": "awaiting_cover", "cover_path": None, "file_path": None,
@@ -291,7 +291,7 @@ class VangonographyStar(Star):
                         logger.error(f"清理临时文件失败 {path}: {e}")
         event.stop_event()
 
-    @filter.command('vang 提取', '解密')
+    @filter.command('提取')
     async def extract_process(self, event: AstrMessageEvent):
         state = {"step": "awaiting_stego_image", "temp_paths": [], "retry_count": 0, "img_path": None}
         await event.send(event.plain_result('请上传包含隐藏文件的图片（支持引用消息）'))
