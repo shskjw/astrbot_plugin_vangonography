@@ -77,28 +77,19 @@ class FileWorkflow:
 
 
 @register(
-    'shskjw',
     'astrbot_plugin_vangonography',
+    'shskjw',
     '一个通过图片隐写术来隐藏和提取文件的插件',
-    '1.0.5' # Version bump
+    '1.0.6' # Version bump for security fix
 )
 class VangonographyStar(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        
-        # 最终修正方案：通过文件路径推断数据目录，确保兼容性
-        # __file__ -> .../data/plugins/astrbot_plugin_vangonography/main.py
-        # os.path.dirname(__file__) -> .../data/plugins/astrbot_plugin_vangonography
         current_plugin_dir = os.path.dirname(__file__)
-        # os.path.basename(...) -> astrbot_plugin_vangonography
         plugin_name = os.path.basename(current_plugin_dir)
-        # os.path.dirname(current_plugin_dir) -> .../data/plugins
         plugins_dir = os.path.dirname(current_plugin_dir)
-        # os.path.dirname(plugins_dir) -> .../data
         data_root_dir = os.path.dirname(plugins_dir)
-        # 构造最终的数据目录路径 -> .../data/datas/astrbot_plugin_vangonography
         plugin_data_dir = os.path.join(data_root_dir, 'datas', plugin_name)
-
         self.tmp_dir = os.path.join(plugin_data_dir, 'tmp_vangonography')
         os.makedirs(self.tmp_dir, exist_ok=True)
         self.iwf = FileWorkflow()
@@ -228,14 +219,19 @@ class VangonographyStar(Star):
 
     @filter.command('提取')
     async def extract_process(self, event: AstrMessageEvent):
-        state = {"step": "awaiting_stego_image", "temp_paths": [], "retry_count": 0, "img_path": None}
+        # 修正：将 session_id 初始化移到此处，确保会话期间唯一
+        state = {
+            "step": "awaiting_stego_image",
+            "temp_paths": [],
+            "retry_count": 0,
+            "img_path": None,
+            "session_id": str(uuid.uuid4())
+        }
         await event.send(event.plain_result('请上传包含隐藏文件的图片（支持引用消息）'))
 
         @session_waiter(timeout=self.timeout)
         async def extraction_waiter(controller: SessionController, next_event: AstrMessageEvent):
-            session_id = str(uuid.uuid4())
             loop = asyncio.get_running_loop()
-
             try:
                 if state["step"] == "awaiting_stego_image":
                     img_bytes = await self.iwf.get_image(next_event)
@@ -248,7 +244,8 @@ class VangonographyStar(Star):
                             await next_event.send(next_event.plain_result('未检测到图片，请重新上传。'))
                             return
                     else:
-                        img_path = os.path.join(self.tmp_dir, f"{session_id}_stego.png")
+                        # 使用在会话开始时生成的 session_id
+                        img_path = os.path.join(self.tmp_dir, f"{state['session_id']}_stego.png")
                         await loop.run_in_executor(None, lambda: Path(img_path).write_bytes(img_bytes))
                         state.update({"temp_paths": [img_path], "img_path": img_path,
                                       "step": "awaiting_password", "retry_count": 0})
