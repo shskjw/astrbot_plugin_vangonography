@@ -1,7 +1,6 @@
 import os
 import uuid
 import base64
-import shutil
 import asyncio
 import tempfile
 from functools import partial
@@ -42,8 +41,10 @@ class FileWorkflow:
 
     async def _load_resource(self, source: str):
         loop = asyncio.get_running_loop()
-        if Path(source).is_file():
-            return await loop.run_in_executor(None, Path(source).read_bytes)
+        # 优化: 统一使用 pathlib
+        path = Path(source)
+        if await loop.run_in_executor(None, path.is_file):
+            return await loop.run_in_executor(None, path.read_bytes)
         if source.startswith('http'):
             return await self._download(source)
         if source.startswith('base64://'):
@@ -81,21 +82,16 @@ class FileWorkflow:
 class VangonographyStar(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        # 修正：使用 tempfile 模块创建健壮的、自动管理的临时目录
         self.tmp_dir_obj = tempfile.TemporaryDirectory(prefix="vangonography_")
         self.tmp_dir = Path(self.tmp_dir_obj.name)
-        
         self.iwf = FileWorkflow()
         self.timeout = 1200
 
     async def terminate(self):
         await self.iwf.terminate()
-        try:
-            # 修正：将同步的 cleanup 操作放入 executor 中
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self.tmp_dir_obj.cleanup)
-        except Exception as e:
-            logger.error(f"清理插件 {self.meta.name} 的临时目录失败: {e}")
+        # 修正：移除冗余的 cleanup 调用。
+        # finally 块的即时清理和 TemporaryDirectory 的垃圾回收机制已足够。
+        # 这避免了潜在的冲突和重复操作。
 
     async def _handle_media_request(self, event: AstrMessageEvent, state: Dict[str, Any], media_type: str):
         media_bytes, original_name = None, None
@@ -213,16 +209,18 @@ class VangonographyStar(Star):
                 ))
                 
                 state["temp_paths"].append(result_path)
-                filename = os.path.basename(result_path)
-
+                
                 await event.send(event.plain_result("✅ 提取完成，文件将私聊发送给您。"))
+                
+                # 关注点：大文件处理。将整个文件读入内存并进行Base64编码可能消耗大量内存。
+                # 这是当前框架消息格式（base64://）的限制，但需注意其对大文件的性能影响。
                 file_data = await loop.run_in_executor(None, Path(result_path).read_bytes)
                 encoded_string = base64.b64encode(file_data).decode('ascii')
                 
                 try:
                     await event.bot.send_private_msg(
                         user_id=event.get_sender_id(),
-                        message=[{"type": "file", "data": {"name": filename, "file": f"base64://{encoded_string}"}}]
+                        message=[{"type": "file", "data": {"name": Path(result_path).name, "file": f"base64://{encoded_string}"}}]
                     )
                 except Exception as send_err:
                     logger.error(f"私聊发送文件失败: {send_err}")
@@ -249,12 +247,12 @@ class VangonographyStar(Star):
         except TimeoutError:
             await event.send(event.plain_result("操作超时，已取消。"))
         finally:
-            # 修正：将同步的 os.path.exists 和 os.remove 放入 executor
             loop = asyncio.get_running_loop()
             for path in state["temp_paths"]:
-                if await loop.run_in_executor(None, os.path.exists, path):
+                # 优化：统一使用 pathlib 的方法进行文件操作
+                if await loop.run_in_executor(None, path.exists):
                     try:
-                        await loop.run_in_executor(None, os.remove, path)
+                        await loop.run_in_executor(None, path.unlink)
                     except Exception as e:
                         logger.error(f"清理临时文件失败 {path}: {e}")
         event.stop_event()
@@ -270,12 +268,12 @@ class VangonographyStar(Star):
         except TimeoutError:
             await event.send(event.plain_result("操作超时，已取消。"))
         finally:
-            # 修正：将同步的 os.path.exists 和 os.remove 放入 executor
             loop = asyncio.get_running_loop()
             for path in state["temp_paths"]:
-                if await loop.run_in_executor(None, os.path.exists, path):
+                # 优化：统一使用 pathlib 的方法进行文件操作
+                if await loop.run_in_executor(None, path.exists):
                     try:
-                        await loop.run_in_executor(None, os.remove, path)
+                        await loop.run_in_executor(None, path.unlink)
                     except Exception as e:
                         logger.error(f"清理临时文件失败 {path}: {e}")
         event.stop_event()
