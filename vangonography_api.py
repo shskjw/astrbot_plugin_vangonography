@@ -1,10 +1,10 @@
 import base64
 import os
-import shutil
 from typing import Optional
 
 from PIL import Image
-from cryptography.fernet import Fernet
+# 修正：导入 InvalidToken 以进行精确的异常捕获
+from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
@@ -125,23 +125,27 @@ def extract_file_from_image(image_path: str, output_dir: str, password: Optional
     
     if password:
         try:
+            # 修正：捕获特定的 InvalidToken 异常
             extracted_data = decrypt_data(extracted_data, password)
-        except Exception:
+        except InvalidToken:
             raise ValueError("解密失败，密码错误或文件已损坏。")
 
     try:
         filename_bytes, file_content = extracted_data.split(FILENAME_DELIMITER, 1)
         
-        # 安全修复：使用 os.path.basename 清洗文件名，防止路径遍历漏洞
         unsafe_filename = filename_bytes.decode('utf-8')
+        # 安全修复：使用 os.path.basename 清洗文件名
         filename = os.path.basename(unsafe_filename)
         
-    except (ValueError, UnicodeDecodeError):
-        raise ValueError("无法解析文件名，文件可能已损坏或未使用此工具创建。")
+        # 安全加固：额外检查，防止 '..' 或 '.' 等文件名导致路径遍历
+        if not filename or filename in ('.', '..'):
+            raise ValueError("提取出的文件名无效或具有安全风险。")
 
-    # 确保最终文件名不为空
-    if not filename:
-        raise ValueError("提取出的文件名为空，无法保存文件。")
+    except (ValueError, UnicodeDecodeError) as e:
+        # 转发原始的 ValueError 或包装其他解码错误
+        if isinstance(e, ValueError):
+             raise e
+        raise ValueError("无法解析文件名，文件可能已损坏或未使用此工具创建。")
 
     output_file_path = os.path.join(output_dir, filename)
     
