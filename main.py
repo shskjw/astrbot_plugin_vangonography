@@ -206,7 +206,7 @@ class FileWorkflow:
     'shskjw',
     'astrbot_plugin_vangonography',
     '一个通过图片隐写术来隐藏和提取文件的插件',
-    '1.0.1'
+    '1.0.2'
 )
 class VangonographyStar(Star):
     def __init__(self, context: Context):
