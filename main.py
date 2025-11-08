@@ -313,19 +313,15 @@ class VangonographyStar(Star):
                         )
                     )
 
-                    # --- DEFINITIVE FIX START ---
-                    # 1. Asynchronously read the output image file as bytes
+
                     image_bytes = await loop.run_in_executor(None, lambda: Path(output_path).read_bytes())
                     
-                    # 2. Encode the bytes into a Base64 string
                     encoded_string = base64.b64encode(image_bytes).decode('ascii')
                     
-                    # 3. Create the Image component by passing the base64 URI to the required 'file' argument
                     await next_event.send(MessageChain([
                         Plain('✅ 隐写完成，图片如下：'),
                         CompImage(file=f"base64://{encoded_string}")
                     ]))
-                    # --- DEFINITIVE FIX END ---
 
                     controller.stop()
 
