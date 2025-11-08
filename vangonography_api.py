@@ -8,10 +8,8 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
-# 1. 代码质量与编码规范: 导入 astrbot logger
 from astrbot.api import logger
 
-# Delimiters for separating filename and content, and for marking end of data
 FILENAME_DELIMITER = b"<-F-N->"
 DATA_DELIMITER = b"<-V-G->"
 
@@ -39,14 +37,12 @@ def _embed_data(image_path: str, data: bytes, output_path: str):
     image = Image.open(image_path).convert('RGB')
     width, height = image.size
     
-    # Add delimiter to mark the end of the data
     data_with_delimiter = data + DATA_DELIMITER
     bits_to_embed = ''.join(f'{byte:08b}' for byte in data_with_delimiter)
     
     required_pixels = -(-len(bits_to_embed) // 3)
     current_pixels = width * height
 
-    # Automatically resize image if it's too small
     if required_pixels > current_pixels:
         scale_factor = (required_pixels / current_pixels) ** 0.5
         new_width = int(width * scale_factor) + 1
@@ -60,7 +56,6 @@ def _embed_data(image_path: str, data: bytes, output_path: str):
         for x in range(width):
             r, g, b = pixels[x, y]
             
-            # Embed bits into the LSB of each color channel
             if bit_index < len(bits_to_embed):
                 r = (r & ~1) | int(bits_to_embed[bit_index])
                 bit_index += 1
@@ -80,7 +75,6 @@ def _embed_data(image_path: str, data: bytes, output_path: str):
     image.save(output_path, 'PNG')
 
 
-# 2. 潜在缺陷或问题: 修复严重性能瓶颈
 def _extract_data(image_path: str) -> bytes:
     image = Image.open(image_path).convert('RGB')
     width, height = image.size
@@ -100,12 +94,10 @@ def _extract_data(image_path: str) -> bytes:
                 del bit_buffer[:8]
                 extracted_bytes.append(int(byte_str, 2))
                 
-                # Efficiently check for the delimiter at the end of the byte array
                 if len(extracted_bytes) >= delimiter_len:
                     if extracted_bytes[-delimiter_len:] == DATA_DELIMITER:
-                        return bytes(extracted_bytes[:-delimiter_len]) # Return data without delimiter
+                        return bytes(extracted_bytes[:-delimiter_len])
     
-    # If delimiter was not found, it might mean the file is corrupt or wasn't created by this tool
     raise ValueError("数据分隔符未找到，文件可能已损坏或格式不正确。")
 
 
@@ -115,7 +107,6 @@ def hide_file_into_image(cover_path: str, file_path: str, file_name: str, output
         with open(file_path, 'rb') as f:
             file_content = f.read()
         
-        # Combine filename and file content into a single payload
         payload = file_name.encode('utf-8') + FILENAME_DELIMITER + file_content
         
         if encrypt:
@@ -136,14 +127,21 @@ def extract_file_from_image(image_path: str, output_dir: str, password: Optional
         try:
             extracted_data = decrypt_data(extracted_data, password)
         except Exception:
-            # Re-raise with a user-friendly message
             raise ValueError("解密失败，密码错误或文件已损坏。")
 
     try:
         filename_bytes, file_content = extracted_data.split(FILENAME_DELIMITER, 1)
-        filename = filename_bytes.decode('utf-8')
+        
+        # 安全修复：使用 os.path.basename 清洗文件名，防止路径遍历漏洞
+        unsafe_filename = filename_bytes.decode('utf-8')
+        filename = os.path.basename(unsafe_filename)
+        
     except (ValueError, UnicodeDecodeError):
         raise ValueError("无法解析文件名，文件可能已损坏或未使用此工具创建。")
+
+    # 确保最终文件名不为空
+    if not filename:
+        raise ValueError("提取出的文件名为空，无法保存文件。")
 
     output_file_path = os.path.join(output_dir, filename)
     
