@@ -1,6 +1,6 @@
 name: astrbot_plugin_vangonography
 desc: 一个通过图片隐写术来隐藏和提取文件的插件
 help:
-version: v1.0.1
+version: v1.0.2
 author: shskjw
 repo: https://github.com/shskjw/astrbot_plugin_vangonography
