@@ -3,6 +3,7 @@ import uuid
 import base64
 import shutil
 import asyncio
+import tempfile
 from functools import partial
 from typing import Optional, Tuple, Dict, Any
 import aiohttp
@@ -80,28 +81,21 @@ class FileWorkflow:
 class VangonographyStar(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        try:
-            current_plugin_dir = os.path.dirname(__file__)
-            plugin_name = os.path.basename(current_plugin_dir)
-            plugins_dir = os.path.dirname(current_plugin_dir)
-            data_root_dir = os.path.dirname(plugins_dir)
-            plugin_data_dir = Path(data_root_dir) / 'datas' / plugin_name
-            self.tmp_dir = plugin_data_dir / 'tmp_vangonography'
-            self.tmp_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            logger.error(f"关键错误：无法创建插件临时目录，插件功能将受限。错误: {e}")
-            self.tmp_dir = Path(os.path.dirname(__file__)) / 'tmp_vangonography'
-            self.tmp_dir.mkdir(exist_ok=True)
+        # 修正：使用 tempfile 模块创建健壮的、自动管理的临时目录
+        self.tmp_dir_obj = tempfile.TemporaryDirectory(prefix="vangonography_")
+        self.tmp_dir = Path(self.tmp_dir_obj.name)
+        
         self.iwf = FileWorkflow()
         self.timeout = 1200
 
     async def terminate(self):
         await self.iwf.terminate()
-        if self.tmp_dir.exists():
-            try:
-                shutil.rmtree(self.tmp_dir)
-            except Exception as e:
-                logger.error(f"清理插件 {self.meta.name} 的临时目录失败: {e}")
+        try:
+            # 修正：将同步的 cleanup 操作放入 executor 中
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self.tmp_dir_obj.cleanup)
+        except Exception as e:
+            logger.error(f"清理插件 {self.meta.name} 的临时目录失败: {e}")
 
     async def _handle_media_request(self, event: AstrMessageEvent, state: Dict[str, Any], media_type: str):
         media_bytes, original_name = None, None
@@ -251,15 +245,18 @@ class VangonographyStar(Star):
 
         handler = partial(self._handle_hide_session, state)
         try:
-            # 修正：采用正确的链式调用
             await session_waiter(timeout=self.timeout)(handler)(event)
         except TimeoutError:
             await event.send(event.plain_result("操作超时，已取消。"))
         finally:
+            # 修正：将同步的 os.path.exists 和 os.remove 放入 executor
+            loop = asyncio.get_running_loop()
             for path in state["temp_paths"]:
-                if os.path.exists(path):
-                    try: os.remove(path)
-                    except Exception as e: logger.error(f"清理临时文件失败 {path}: {e}")
+                if await loop.run_in_executor(None, os.path.exists, path):
+                    try:
+                        await loop.run_in_executor(None, os.remove, path)
+                    except Exception as e:
+                        logger.error(f"清理临时文件失败 {path}: {e}")
         event.stop_event()
 
     @filter.command('提取')
@@ -269,13 +266,16 @@ class VangonographyStar(Star):
 
         handler = partial(self._handle_extract_session, state)
         try:
-            # 修正：采用正确的链式调用
             await session_waiter(timeout=self.timeout)(handler)(event)
         except TimeoutError:
             await event.send(event.plain_result("操作超时，已取消。"))
         finally:
+            # 修正：将同步的 os.path.exists 和 os.remove 放入 executor
+            loop = asyncio.get_running_loop()
             for path in state["temp_paths"]:
-                if os.path.exists(path):
-                    try: os.remove(path)
-                    except Exception as e: logger.error(f"清理临时文件失败 {path}: {e}")
+                if await loop.run_in_executor(None, os.path.exists, path):
+                    try:
+                        await loop.run_in_executor(None, os.remove, path)
+                    except Exception as e:
+                        logger.error(f"清理临时文件失败 {path}: {e}")
         event.stop_event()
