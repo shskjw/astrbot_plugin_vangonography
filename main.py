@@ -174,21 +174,25 @@ class FileWorkflow:
 
     async def get_image(self, e: AstrMessageEvent) -> Optional[bytes]:
         for seg in e.message_obj.message:
+            # Handle replied messages
             if isinstance(seg, Reply) and hasattr(seg, 'chain'):
                 for s_chain in seg.chain:
                     if isinstance(s_chain, CompImage) and hasattr(s_chain, 'url') and s_chain.url:
                         if img := await self._l(s_chain.url): return img
+            # Handle direct messages
             if isinstance(seg, CompImage) and hasattr(seg, 'url') and seg.url:
                 if img := await self._l(seg.url): return img
         return None
 
     async def get_file(self, e: AstrMessageEvent) -> Optional[Tuple[bytes, str]]:
         for seg in e.message_obj.message:
+            # Handle replied messages
             if isinstance(seg, Reply) and hasattr(seg, 'chain'):
                 for s_chain in seg.chain:
                     if isinstance(s_chain, CompFile) and hasattr(s_chain, 'url') and s_chain.url:
                         if data := await self._l(s_chain.url):
                             return data, getattr(s_chain, 'name', 'file')
+            # Handle direct messages
             if isinstance(seg, CompFile) and hasattr(seg, 'url') and seg.url:
                 if data := await self._l(seg.url):
                     return data, getattr(seg, 'name', 'file')
@@ -231,13 +235,20 @@ class VangonographyStar(Star):
             try:
                 async def handle_media_request(media_type: str):
                     media_bytes = None
+                    media_name_prompt = ""
+
                     if media_type == 'image':
                         media_bytes = await self.iwf.get_image(next_event)
                         media_name_prompt = '图片'
-                    else:
-                        # 只获取文件内容，忽略返回的文件名
-                        media_bytes, _ = await self.iwf.get_file(next_event)
-                        media_name_prompt = '文件'
+                    else:  # 'file' type now handles both files and images
+                        # First, try to get a formal file upload
+                        file_data = await self.iwf.get_file(next_event)
+                        if file_data and file_data[0]:
+                            media_bytes = file_data[0]
+                        # If not, try to get an image upload
+                        if not media_bytes:
+                            media_bytes = await self.iwf.get_image(next_event)
+                        media_name_prompt = '文件或图片'
 
                     if not media_bytes:
                         state["retry_count"] += 1
@@ -253,18 +264,16 @@ class VangonographyStar(Star):
                     path = os.path.join(self.tmp_dir, f"{state['session_id']}{ext}")
 
                     await loop.run_in_executor(None, lambda: Path(path).write_bytes(media_bytes))
-
                     state["temp_paths"].append(path)
-
                     return "ok", path
-
+                
                 if state["step"] == "awaiting_cover":
                     result, path = await handle_media_request('image')
                     if result == "continue": return
                     if result == "stop": controller.stop(); return
                     state["cover_path"] = path
                     state.update({"step": "awaiting_file", "retry_count": 0})
-                    await next_event.send(next_event.plain_result("封面图收到。现在请上传要隐藏的文件（任意格式）"))
+                    await next_event.send(next_event.plain_result("封面图收到。现在请上传要隐藏的文件（可以是任意格式，包括图片）。"))
 
                 elif state["step"] == "awaiting_file":
                     result, path = await handle_media_request('file')
@@ -273,7 +282,7 @@ class VangonographyStar(Star):
                     state["file_path"] = path
                     state.update({"step": "awaiting_filename", "retry_count": 0})
                     await next_event.send(
-                        next_event.plain_result("文件收到。请为这个文件命名（需要包含后缀，例如：我的文档.zip）"))
+                        next_event.plain_result("文件收到。请为这个文件命名（需要包含后缀，例如：我的文档.zip 或 secret.png）。"))
 
                 elif state["step"] == "awaiting_filename":
                     filename = next_event.get_message_str().strip()
@@ -292,7 +301,7 @@ class VangonographyStar(Star):
                     state["temp_paths"].append(output_path)
 
                     await loop.run_in_executor(
-                        None,  # 使用默认的 ThreadPoolExecutor
+                        None,
                         lambda: hide_file_into_image(
                             state["cover_path"],
                             state["file_path"],
@@ -304,10 +313,19 @@ class VangonographyStar(Star):
                         )
                     )
 
+                    # --- DEFINITIVE FIX START ---
+                    # 1. Asynchronously read the output image file as bytes
+                    image_bytes = await loop.run_in_executor(None, lambda: Path(output_path).read_bytes())
+                    
+                    # 2. Encode the bytes into a Base64 string
+                    encoded_string = base64.b64encode(image_bytes).decode('ascii')
+                    
+                    # 3. Create the Image component by passing the base64 URI to the required 'file' argument
                     await next_event.send(MessageChain([
                         Plain('✅ 隐写完成，图片如下：'),
-                        CompImage.fromPath(output_path)
+                        CompImage(file=f"base64://{encoded_string}")
                     ]))
+                    # --- DEFINITIVE FIX END ---
 
                     controller.stop()
 
@@ -368,15 +386,21 @@ class VangonographyStar(Star):
                     if password.lower() in ['不需要', '不用', 'no', '']: password = None
                     await next_event.send(next_event.plain_result('收到。正在提取...'))
 
-                    result_path = await loop.run_in_executor(
-                        None,
-                        lambda: extract_file_from_image(
-                            state["img_path"],  # ip
-                            self.tmp_dir,  # od
-                            password  # p
+                    try:
+                        result_path = await loop.run_in_executor(
+                            None,
+                            lambda: extract_file_from_image(
+                                state["img_path"],  # ip
+                                self.tmp_dir,  # od
+                                password  # p
+                            )
                         )
-                    )
-
+                    except ValueError as ve:
+                        # 捕获解密失败或文件损坏的特定错误
+                        await next_event.send(next_event.plain_result(f"提取失败：{ve}"))
+                        controller.stop()
+                        return
+                        
                     state["temp_paths"].append(result_path)
                     filename = os.path.basename(result_path)
 
