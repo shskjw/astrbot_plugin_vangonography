@@ -1,6 +1,6 @@
 import base64
-import os
 from typing import Optional
+from pathlib import Path
 
 from PIL import Image
 from cryptography.fernet import Fernet, InvalidToken
@@ -19,6 +19,7 @@ def _derive_key(password: str, salt: bytes) -> bytes:
 
 
 def encrypt_data(data: bytes, password: str) -> bytes:
+    import os
     salt = os.urandom(16)
     key = _derive_key(password, salt)
     fernet = Fernet(key)
@@ -32,7 +33,8 @@ def decrypt_data(data: bytes, password: str) -> bytes:
     return fernet.decrypt(ciphertext)
 
 
-def _embed_data(image_path: str, data: bytes, output_path: str):
+# 优化: 统一使用 pathlib 进行路径操作
+def _embed_data(image_path: Path, data: bytes, output_path: Path):
     image = Image.open(image_path).convert('RGB')
     width, height = image.size
     
@@ -74,7 +76,8 @@ def _embed_data(image_path: str, data: bytes, output_path: str):
     image.save(output_path, 'PNG')
 
 
-def _extract_data(image_path: str) -> bytes:
+# 优化: 统一使用 pathlib 进行路径操作
+def _extract_data(image_path: Path) -> bytes:
     image = Image.open(image_path).convert('RGB')
     width, height = image.size
     pixels = image.load()
@@ -100,11 +103,11 @@ def _extract_data(image_path: str) -> bytes:
     raise ValueError("数据分隔符未找到，文件可能已损坏或格式不正确。")
 
 
-def hide_file_into_image(cover_path: str, file_path: str, file_name: str, output_path: str,
+# 优化: 统一使用 pathlib 进行路径操作
+def hide_file_into_image(cover_path: Path, file_path: Path, file_name: str, output_path: Path,
                          encrypt: bool = False, password: Optional[str] = None):
     try:
-        with open(file_path, 'rb') as f:
-            file_content = f.read()
+        file_content = file_path.read_bytes()
         
         payload = file_name.encode('utf-8') + FILENAME_DELIMITER + file_content
         
@@ -119,7 +122,8 @@ def hide_file_into_image(cover_path: str, file_path: str, file_name: str, output
         raise
 
 
-def extract_file_from_image(image_path: str, output_dir: str, password: Optional[str] = None) -> str:
+# 优化: 统一使用 pathlib 进行路径操作
+def extract_file_from_image(image_path: Path, output_dir: Path, password: Optional[str] = None) -> Path:
     extracted_data = _extract_data(image_path)
     
     if password:
@@ -132,18 +136,15 @@ def extract_file_from_image(image_path: str, output_dir: str, password: Optional
         filename_bytes, file_content = extracted_data.split(FILENAME_DELIMITER, 1)
         
         unsafe_filename = filename_bytes.decode('utf-8')
-        filename = os.path.basename(unsafe_filename)
+        filename = Path(unsafe_filename).name
         
         if not filename or filename in ('.', '..'):
             raise ValueError("提取出的文件名无效或具有安全风险。")
 
     except (ValueError, UnicodeDecodeError) as e:
-        # 修正：简化异常处理，并使用 "from e" 保留原始异常上下文
         raise ValueError("无法解析文件名或内容，文件可能已损坏。") from e
 
-    output_file_path = os.path.join(output_dir, filename)
-    
-    with open(output_file_path, 'wb') as f:
-        f.write(file_content)
+    output_file_path = output_dir / filename
+    output_file_path.write_bytes(file_content)
         
     return output_file_path
